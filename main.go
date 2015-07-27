@@ -7,8 +7,9 @@ import (
   "fmt"
   "time"
   "net/http"
+  "github.com/shirou/gopsutil/disk"
   "github.com/shirou/gopsutil/mem"
-  // "github.com/shirou/gopsutil/cpu"
+  "github.com/shirou/gopsutil/cpu"
   "github.com/davecgh/go-spew/spew"
   "github.com/ant0ine/go-json-rest/rest"
   // "github.com/oleiade/reflections"
@@ -20,7 +21,8 @@ type Message struct {
 
 type Data struct {
 	Memory Memory `json:"memory"`
-	CPU CPU `json:"cpu"`
+	CPU    CPU    `json:"cpu"`
+	Disk   Disk   `json:"disk"`
 }
 
 type Memory struct {
@@ -29,25 +31,52 @@ type Memory struct {
 }
 
 type CPU struct {
-  Count  int `json:"count"`
+  Count int32   `json:"count"`
+  Idle  float64 `json:"idle"`
+}
+
+type Disk struct {
+  MountPoint string `json:"mount_point"`
+  Device     string `json:"device"`
+  Total      uint64 `json:"total"`
+  Free       uint64 `json:"free"`
 }
 
 var v *mem.VirtualMemoryStat
-// var c []cpu.CPUTimesStat
+var ct []cpu.CPUTimesStat
+var ci []cpu.CPUInfoStat
+var disks []disk.DiskPartitionStat
+var disksUsage *disk.DiskUsageStat
+
 var err error
 
 func updateMemory() {
   v, err = mem.VirtualMemory()
-  spew.Dump(v)
+  log.Printf("updateMemory(): %v", spew.Sdump(v))
   if err != nil { log.Fatal(err) }
 }
 
-// func updateCPU() {
-//   c, err := cpu.CPUTimes(true)
-//   spew.Dump(c)
-//   spew.Dump(len(c))
-//   if err != nil { log.Fatal(err) }
-// }
+func updateCPUTimes() {
+  ct, err = cpu.CPUTimes(false)
+  log.Printf("updateCPUTimes(): %v", spew.Sdump(ct))
+  if err != nil { log.Fatal(err) }
+}
+
+func updateCPUInfo() {
+  ci, err = cpu.CPUInfo()
+  log.Printf("updateCPUInfo(): %v", spew.Sdump(ci))
+  if err != nil { log.Fatal(err) }
+}
+
+func updateDisk() {
+  disks, err = disk.DiskPartitions(true)
+  log.Printf("updateDisk(): %v", spew.Sdump(disks))
+  if err != nil { log.Fatal(err) }
+
+  disksUsage, err = disk.DiskUsage("/")
+  log.Printf("updateDisk(): %v", spew.Sdump(disksUsage))
+  if err != nil { log.Fatal(err) }
+}
 
 func nameOf(f interface{}) string {
 	v := reflect.ValueOf(f)
@@ -69,11 +98,18 @@ func refreshData(what func(), x time.Duration) {
 func data() Data {
   d := Data{
     Memory: Memory{
-      Total: fmt.Sprintf("%d", v.Total),
-      Free: fmt.Sprintf("%d", v.Free),
+      Total: fmt.Sprintf("%d", v.Available),
+      Free:  fmt.Sprintf("%d", v.Free),
     },
     CPU: CPU{
-      Count: 2,
+      Count: ci[0].Cores,
+      Idle:  ct[0].Idle,
+    },
+    Disk: Disk{
+      MountPoint: disks[0].Mountpoint,
+      Device:     disks[0].Device,
+      Total:      disksUsage.Total,
+      Free:       disksUsage.Free,
     },
   }
   return d
@@ -83,13 +119,16 @@ func main() {
   log.Printf("Starting up..")
 
   updateMemory()
-  // updateCPU()
+  updateCPUTimes()
+  updateCPUInfo()
+  updateDisk()
 
   api := rest.NewApi()
   api.Use(rest.DefaultDevStack...)
 
   go refreshData(updateMemory, 15)
-  // go refreshData(updateCPU, 15)
+  go refreshData(updateCPUTimes, 15)
+  go refreshData(updateDisk, 60)
 
   router, err := rest.MakeRouter(
 
@@ -109,7 +148,6 @@ func main() {
     //
     //   w.WriteJson(extractedData)
     // }),
-
   )
 
   if err != nil { log.Fatal(err) }
